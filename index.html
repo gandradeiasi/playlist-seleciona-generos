@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerador de Playlist por Gênero</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        h1 {
+            color: #1DB954;
+            text-align: center;
+        }
+        .container {
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        #login-container, #app-container {
+            text-align: center;
+            margin-top: 20px;
+        }
+        button {
+            background-color: #1DB954;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 30px;
+            font-weight: bold;
+            cursor: pointer;
+            margin: 10px 0;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #1ed760;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #genres-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 10px;
+            margin: 20px 0;
+            max-height: 400px;
+            overflow-y: auto;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .genre-item {
+            display: flex;
+            align-items: center;
+            padding: 5px;
+        }
+        .genre-item label {
+            margin-left: 8px;
+            cursor: pointer;
+        }
+        .genre-item input {
+            cursor: pointer;
+        }
+        #playlist-name {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .status {
+            margin: 15px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .error {
+            background-color: #ffdddd;
+            color: #d8000c;
+        }
+        .success {
+            background-color: #ddffdd;
+            color: #4F8A10;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(0, 0, 0, 0.3);
+            border-radius: 50%;
+            border-top-color: #1DB954;
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 10px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        #selected-count {
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .control-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Gerador de Playlist por Gênero</h1>
+        
+        <div id="login-container">
+            <p>Para começar, faça login com sua conta do Spotify:</p>
+            <button id="login-button">Login com Spotify</button>
+        </div>
+        
+        <div id="app-container" style="display: none;">
+            <div id="status-message"></div>
+            
+            <div class="control-row">
+                <button id="refresh-button">Atualizar Lista de Gêneros</button>
+                <button id="select-all">Selecionar Todos</button>
+                <button id="unselect-all">Desmarcar Todos</button>
+            </div>
+            
+            <div id="selected-count">Gêneros selecionados: 0</div>
+            
+            <div id="genres-container">
+                <p>Carregando gêneros...</p>
+            </div>
+            
+            <div>
+                <input type="text" id="playlist-name" placeholder="Nome da playlist" required>
+                <button id="create-playlist" disabled>Gerar Playlist</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Configurações da API do Spotify
+        const clientId = 'cdbe0b644b984a6e98839e352d87bb3d';
+        const redirectUri = 'https://gandradeiasi.github.io/recomendador-de-artista-4/';
+        
+        // Escopos necessários para a aplicação
+        const scopes = [
+            'user-library-read',
+            'playlist-modify-public',
+            'playlist-modify-private'
+        ];
+        
+        // Elementos do DOM
+        const loginButton = document.getElementById('login-button');
+        const loginContainer = document.getElementById('login-container');
+        const appContainer = document.getElementById('app-container');
+        const genresContainer = document.getElementById('genres-container');
+        const refreshButton = document.getElementById('refresh-button');
+        const createPlaylistButton = document.getElementById('create-playlist');
+        const playlistNameInput = document.getElementById('playlist-name');
+        const statusMessage = document.getElementById('status-message');
+        const selectAllButton = document.getElementById('select-all');
+        const unselectAllButton = document.getElementById('unselect-all');
+        const selectedCountElement = document.getElementById('selected-count');
+        
+        // Variáveis globais
+        let accessToken = '';
+        let userId = '';
+        let savedTracks = [];
+        let genreMap = {};
+        let selectedGenres = new Set();
+        
+        // Função para gerar um estado aleatório para segurança
+        function generateRandomState() {
+            return Math.random().toString(36).substring(2, 15);
+        }
+        
+        // Inicialização
+        function init() {
+            // Verificar se já existe um token na URL (retorno do login)
+            const hashParams = getHashParams();
+            if (hashParams.access_token) {
+                accessToken = hashParams.access_token;
+                // Limpar a URL após obter o token
+                history.replaceState(null, null, ' ');
+                showApp();
+                getUserProfile();
+            } else {
+                showLogin();
+            }
+            
+            // Configurar eventos
+            loginButton.addEventListener('click', redirectToSpotifyAuth);
+            refreshButton.addEventListener('click', fetchSavedTracks);
+            createPlaylistButton.addEventListener('click', createPlaylist);
+            playlistNameInput.addEventListener('input', validateForm);
+            selectAllButton.addEventListener('click', selectAllGenres);
+            unselectAllButton.addEventListener('click', unselectAllGenres);
+        }
+        
+        // Obtém os parâmetros de hash da URL
+        function getHashParams() {
+            const hashParams = {};
+            const hash = window.location.hash.substring(1);
+            
+            if (!hash) return hashParams;
+            
+            hash.split('&').forEach(pair => {
+                const [key, value] = pair.split('=');
+                hashParams[key] = decodeURIComponent(value);
+            });
+            
+            return hashParams;
+        }
+        
+        // Redireciona para a autenticação do Spotify
+        function redirectToSpotifyAuth() {
+            const state = generateRandomState();
+            localStorage.setItem('spotify_auth_state', state);
+            
+            const authUrl = new URL('https://accounts.spotify.com/authorize');
+            authUrl.searchParams.append('client_id', clientId);
+            authUrl.searchParams.append('response_type', 'token');
+            authUrl.searchParams.append('redirect_uri', redirectUri);
+            authUrl.searchParams.append('state', state);
+            authUrl.searchParams.append('scope', scopes.join(' '));
+            
+            window.location.href = authUrl.toString();
+        }
+        
+        // Exibe o container de login
+        function showLogin() {
+            loginContainer.style.display = 'block';
+            appContainer.style.display = 'none';
+        }
+        
+        // Exibe o container da aplicação
+        function showApp() {
+            loginContainer.style.display = 'none';
+            appContainer.style.display = 'block';
+            fetchSavedTracks();
+        }
+        
+        // Obter o perfil do usuário
+        async function getUserProfile() {
+            try {
+                const response = await fetch('https://api.spotify.com/v1/me', {
+                    headers: { 'Authorization': `Bearer ${accessToken}` }
+                });
+                
+                if (!response.ok) throw new Error('Falha ao obter perfil do usuário');
+                
+                const data = await response.json();
+                userId = data.id;
+            } catch (error) {
+                showError('Erro ao obter perfil: ' + error.message);
+            }
+        }
+        
+        // Buscar todas as músicas salvas
+        async function fetchSavedTracks() {
+            showLoading('Buscando suas músicas salvas...');
+            savedTracks = [];
+            genreMap = {};
+            
+            try {
+                let nextUrl = 'https://api.spotify.com/v1/me/tracks?limit=50';
+                
+                while (nextUrl) {
+                    const response = await fetch(nextUrl, {
+                        headers: { 'Authorization': `Bearer ${accessToken}` }
+                    });
+                    
+                    if (!response.ok) throw new Error('Falha ao buscar músicas');
+                    
+                    const data = await response.json();
+                    savedTracks = [...savedTracks, ...data.items];
+                    nextUrl = data.next;
+                    
+                    showLoading(`Carregadas ${savedTracks.length} músicas...`);
+                }
+                
+                await extractGenres();
+                displayGenres();
+                showSuccess(`${savedTracks.length} músicas encontradas em ${Object.keys(genreMap).length} gêneros!`);
+            } catch (error) {
+                showError('Erro ao buscar músicas: ' + error.message);
+            }
+        }
+        
+        // Extrair os gêneros de todas as músicas
+        async function extractGenres() {
+            showLoading('Extraindo gêneros das músicas...');
+            
+            // Coletar IDs de artistas únicos
+            const artistIds = new Set();
+            savedTracks.forEach(item => {
+                item.track.artists.forEach(artist => {
+                    artistIds.add(artist.id);
+                });
+            });
+            
+            // Buscar informações dos artistas em lotes de 50 (limite da API)
+            const artistIdsArray = [...artistIds];
+            const batchSize = 50;
+            
+            for (let i = 0; i < artistIdsArray.length; i += batchSize) {
+                const batch = artistIdsArray.slice(i, i + batchSize);
+                showLoading(`Carregando detalhes de artistas (${i + 1}-${Math.min(i + batchSize, artistIdsArray.length)} de ${artistIdsArray.length})...`);
+                
+                const response = await fetch(`https://api.spotify.com/v1/artists?ids=${batch.join(',')}`, {
+                    headers: { 'Authorization': `Bearer ${accessToken}` }
+                });
+                
+                if (!response.ok) throw new Error('Falha ao buscar informações dos artistas');
+                
+                const data = await response.json();
+                
+                // Mapear artistas para seus gêneros
+                const artistGenres = {};
+                data.artists.forEach(artist => {
+                    artistGenres[artist.id] = artist.genres;
+                });
+                
+                // Associar músicas aos gêneros
+                savedTracks.forEach(item => {
+                    item.track.artists.forEach(artist => {
+                        if (artistGenres[artist.id]) {
+                            artistGenres[artist.id].forEach(genre => {
+                                if (!genreMap[genre]) {
+                                    genreMap[genre] = [];
+                                }
+                                // Evitar duplicatas
+                                if (!genreMap[genre].some(t => t.id === item.track.id)) {
+                                    genreMap[genre].push(item.track);
+                                }
+                            });
+                        }
+                    });
+                });
+            }
+        }
+        
+        // Exibir a lista de gêneros com checkboxes
+        function displayGenres() {
+            genresContainer.innerHTML = '';
+            selectedGenres.clear();
+            
+            // Ordenar gêneros por nome
+            const sortedGenres = Object.keys(genreMap).sort();
+            
+            sortedGenres.forEach(genre => {
+                const tracks = genreMap[genre];
+                
+                const genreDiv = document.createElement('div');
+                genreDiv.className = 'genre-item';
+                
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.id = `genre-${genre}`;
+                checkbox.value = genre;
+                checkbox.addEventListener('change', function() {
+                    if (this.checked) {
+                        selectedGenres.add(genre);
+                    } else {
+                        selectedGenres.delete(genre);
+                    }
+                    updateSelectedCount();
+                    validateForm();
+                });
+                
+                const label = document.createElement('label');
+                label.htmlFor = `genre-${genre}`;
+                label.textContent = `${genre} (${tracks.length})`;
+                
+                genreDiv.appendChild(checkbox);
+                genreDiv.appendChild(label);
+                genresContainer.appendChild(genreDiv);
+            });
+            
+            updateSelectedCount();
+            validateForm();
+        }
+        
+        // Atualizar contador de gêneros selecionados
+        function updateSelectedCount() {
+            selectedCountElement.textContent = `Gêneros selecionados: ${selectedGenres.size}`;
+        }
+        
+        // Selecionar todos os gêneros
+        function selectAllGenres() {
+            const checkboxes = document.querySelectorAll('#genres-container input[type="checkbox"]');
+            checkboxes.forEach(checkbox => {
+                checkbox.checked = true;
+                selectedGenres.add(checkbox.value);
+            });
+            updateSelectedCount();
+            validateForm();
+        }
+        
+        // Desmarcar todos os gêneros
+        function unselectAllGenres() {
+            const checkboxes = document.querySelectorAll('#genres-container input[type="checkbox"]');
+            checkboxes.forEach(checkbox => {
+                checkbox.checked = false;
+            });
+            selectedGenres.clear();
+            updateSelectedCount();
+            validateForm();
+        }
+        
+        // Validar o formulário
+        function validateForm() {
+            const playlistName = playlistNameInput.value.trim();
+            createPlaylistButton.disabled = playlistName === '' || selectedGenres.size === 0;
+        }
+        
+        // Criar playlist com as músicas dos gêneros selecionados
+        async function createPlaylist() {
+            const playlistName = playlistNameInput.value.trim();
+            
+            if (!playlistName || selectedGenres.size === 0) {
+                showError('Preencha o nome da playlist e selecione pelo menos um gênero.');
+                return;
+            }
+            
+            showLoading('Criando playlist...');
+            
+            try {
+                // Criar a playlist
+                const createResponse = await fetch(`https://api.spotify.com/v1/users/${userId}/playlists`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        name: playlistName,
+                        description: `Playlist de ${[...selectedGenres].join(', ')} gerada automaticamente.`,
+                        public: false
+                    })
+                });
+                
+                if (!createResponse.ok) throw new Error('Falha ao criar playlist');
+                
+                const playlistData = await createResponse.json();
+                const playlistId = playlistData.id;
+                
+                // Coletar músicas dos gêneros selecionados
+                const tracksToAdd = new Set();
+                selectedGenres.forEach(genre => {
+                    genreMap[genre].forEach(track => {
+                        tracksToAdd.add(track.uri);
+                    });
+                });
+                
+                const trackUris = [...tracksToAdd];
+                
+                // Adicionar músicas à playlist em lotes (limite de 100 por requisição)
+                const batchSize = 100;
+                let addedCount = 0;
+                
+                for (let i = 0; i < trackUris.length; i += batchSize) {
+                    showLoading(`Adicionando músicas (${i + 1}-${Math.min(i + batchSize, trackUris.length)} de ${trackUris.length})...`);
+                    
+                    const batch = trackUris.slice(i, i + batchSize);
+                    const addResponse = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${accessToken}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            uris: batch
+                        })
+                    });
+                    
+                    if (!addResponse.ok) throw new Error('Falha ao adicionar músicas à playlist');
+                    
+                    addedCount += batch.length;
+                }
+                
+                showSuccess(`Playlist "${playlistName}" criada com sucesso com ${trackUris.length} músicas! Confira no seu Spotify.`);
+                playlistNameInput.value = '';
+            } catch (error) {
+                showError('Erro ao criar playlist: ' + error.message);
+            }
+        }
+        
+        // Exibir mensagem de erro
+        function showError(message) {
+            statusMessage.className = 'status error';
+            statusMessage.textContent = message;
+        }
+        
+        // Exibir mensagem de sucesso
+        function showSuccess(message) {
+            statusMessage.className = 'status success';
+            statusMessage.textContent = message;
+        }
+        
+        // Exibir indicador de carregamento
+        function showLoading(message) {
+            statusMessage.className = 'status';
+            statusMessage.innerHTML = `<div class="loading"></div> ${message}`;
+        }
+        
+        // Inicializar a aplicação
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
